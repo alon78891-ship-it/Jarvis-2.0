@@ -368,7 +368,100 @@ class WhatsAppAutomationService : AccessibilityService() {
           cs = cs.replace('return if (candidate.isNotBlank()) candidate else "Delhi"', 'return if (candidate.isNotBlank()) candidate else "Dulalgram"')
           commander.write_text(cs)
 
-          print("JARVIS WhatsApp automation patch applied: Accessibility permission, voice message parsing, auto-open and auto-send.")
+          # Import the phone's real Contacts into JARVIS after the user grants READ_CONTACTS.
+          vm = Path("app/src/main/java/com/example/ui/viewmodel/JarvisViewModel.kt")
+          vs = vm.read_text()
+          if "fun importDeviceContacts" not in vs:
+              vs = vs.replace(
+                  "import android.graphics.BitmapFactory\n",
+                  "import android.graphics.BitmapFactory\nimport android.provider.ContactsContract\n"
+              )
+              marker = "    fun updateDeviceStatus() {"
+              method = '''    fun importDeviceContacts(context: Context) {
+        if (androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.READ_CONTACTS
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val existing = dao.getAllContacts().associateBy { it.name.lowercase() + "|" + it.phoneNumber }
+            val resolver = context.contentResolver
+            val projection = arrayOf(
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                ContactsContract.CommonDataKinds.Phone.NUMBER
+            )
+            resolver.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                projection,
+                null,
+                null,
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC"
+            )?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                val numberIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                while (cursor.moveToNext()) {
+                    val name = cursor.getString(nameIndex)?.trim().orEmpty()
+                    val number = cursor.getString(numberIndex)?.trim().orEmpty()
+                    if (name.isNotBlank() && number.isNotBlank()) {
+                        val key = name.lowercase() + "|" + number
+                        if (!existing.containsKey(key)) {
+                            dao.insertContact(ContactEntity(name, number))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+'''
+              vs = vs.replace(marker, method + marker)
+              vm.write_text(vs)
+
+          main = Path("app/src/main/java/com/example/ui/JarvisMainScreen.kt")
+          ms = main.read_text()
+          if "Manifest.permission.READ_CONTACTS" not in ms:
+              ms = ms.replace(
+                  "    val audioPermissionLauncher = rememberLauncherForActivityResult(",
+                  """    var hasContactsPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val contactsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasContactsPermission = isGranted
+        if (isGranted && showContactsDialog) {
+            viewModel.importDeviceContacts(context)
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(showContactsDialog) {
+        if (showContactsDialog) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
+                viewModel.importDeviceContacts(context)
+            } else {
+                contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+            }
+        }
+    }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult("""
+              )
+          main.write_text(ms)
+
+          manifest = Path("app/src/main/AndroidManifest.xml")
+          m = manifest.read_text()
+          if 'android.permission.READ_CONTACTS' not in m:
+              m = m.replace(
+                  '<uses-permission android:name="android.permission.RECORD_AUDIO" />',
+                  '<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.READ_CONTACTS" />'
+              )
+          manifest.write_text(m)
+
+          print("JARVIS device contacts import patch applied.")
           PY
 
       - name: Fix JARVIS Android configuration
