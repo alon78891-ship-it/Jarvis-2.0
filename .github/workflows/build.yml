@@ -100,39 +100,10 @@ jobs:
             exit 1
           fi
 
-      - name: Fix WhatsApp automation source
+      - name: Fix WhatsApp automation compile error
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          p = Path("app/src/main/java/com/example/service/DeviceController.kt")
-          s = p.read_text()
-
-          marker = '    // 5. WHATSAPP MESSAGE & CHAT\\n'
-          if 'fun isWhatsAppAutomationEnabled()' not in s:
-              s = s.replace(
-                  marker,
-                  marker + '    fun isWhatsAppAutomationEnabled(): Boolean = WhatsAppAutomationService.isEnabled(context)\\n\\n'
-              )
-
-          start = s.find('    fun sendWhatsApp(number: String, message: String): Boolean {')
-          if start == -1:
-              raise SystemExit("ERROR: sendWhatsApp() not found")
-
-          end = s.find('    fun openWhatsAppChat(number: String): Boolean {', start)
-          if end == -1:
-              raise SystemExit("ERROR: openWhatsAppChat() not found")
-
-          replacement = '''    fun sendWhatsApp(number: String, message: String): Boolean {
-        return WhatsAppAutomationService.queueAndStart(context, number, message)
-    }
-
-'''
-          s = s[:start] + replacement + s[end:]
-          p.write_text(s)
-          print("WhatsApp automation source fixed")
-          PY
+          python3 -c 'from pathlib import Path; p=Path("app/src/main/java/com/example/service/DeviceController.kt"); s=p.read_text(); marker="    fun sendWhatsApp(number: String, message: String): Boolean {"; add="    fun isWhatsAppAutomationEnabled(): Boolean = WhatsAppAutomationService.isEnabled(context)\\n\\n"; s=s if "fun isWhatsAppAutomationEnabled()" in s else s.replace(marker,add+marker); p.write_text(s); print("WhatsApp compile fix applied")'
 
       - name: Create debug keystore
         working-directory: ${{ env.PROJECT_DIR }}
