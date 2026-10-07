@@ -66,7 +66,319 @@ jobs:
                                            'CommandItem("Weather", "weather Dulalgram", "Get live weather report")')
           dialogs.write_text(ds)
 
-          print("JARVIS fixes applied: Contacts, Dulalgram Weather, Torch ON/OFF, removed 25*40 quick chip.")
+          # Make voice WhatsApp sending work through an explicit Accessibility permission.
+          service = Path("app/src/main/java/com/example/service/WhatsAppAutomationService.kt")
+          service.write_text(r'''package com.example.service
+
+import android.accessibilityservice.AccessibilityService
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import java.net.URLEncoder
+
+class WhatsAppAutomationService : AccessibilityService() {
+    private val handler = Handler(Looper.getMainLooper())
+    private var attempts = 0
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        instance = this
+        launchPendingIfAny()
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.packageName?.toString() == WHATSAPP_PACKAGE) {
+            if (hasPendingRequest()) scheduleSendAttempt()
+        }
+    }
+
+    override fun onInterrupt() = Unit
+
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(SEND_TOKEN)
+        if (instance === this) instance = null
+        super.onDestroy()
+    }
+
+    private fun launchPendingIfAny() {
+        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val url = prefs.getString(KEY_URL, null) ?: return
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                setPackage(WHATSAPP_PACKAGE)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+            scheduleSendAttempt()
+        } catch (_: Exception) {
+            prefs.edit().remove(KEY_URL).apply()
+        }
+    }
+
+    private fun scheduleSendAttempt() {
+        handler.removeCallbacksAndMessages(SEND_TOKEN)
+        attempts = 0
+        handler.postAtTime({ tryClickSend() }, SEND_TOKEN, android.os.SystemClock.uptimeMillis() + 900)
+    }
+
+    private fun tryClickSend() {
+        if (!hasPendingRequest()) return
+        attempts++
+        val root = rootInActiveWindow
+        if (root != null && root.packageName?.toString() == WHATSAPP_PACKAGE) {
+            val sendNode = findSendNode(root)
+            if (sendNode != null && sendNode.isVisibleToUser && sendNode.isEnabled) {
+                if (sendNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    clearPending()
+                    return
+                }
+            }
+        }
+        if (attempts < MAX_ATTEMPTS) {
+            handler.postDelayed({ tryClickSend() }, 500)
+        }
+    }
+
+    private fun findSendNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        try {
+            root.findAccessibilityNodeInfosByViewId(WHATSAPP_SEND_ID).firstOrNull()?.let { return it }
+        } catch (_: Exception) {}
+
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        while (queue.isNotEmpty()) {
+            val node = queue.removeFirst()
+            val text = node.text?.toString()?.trim()?.lowercase().orEmpty()
+            val desc = node.contentDescription?.toString()?.trim()?.lowercase().orEmpty()
+            val id = node.viewIdResourceName?.lowercase().orEmpty()
+            if ((text == "send" || desc == "send" || id.endsWith(":id/send")) && node.isClickable) {
+                return node
+            }
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { queue.add(it) }
+            }
+        }
+        return null
+    }
+
+    private fun hasPendingRequest(): Boolean =
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE).contains(KEY_URL)
+
+    private fun clearPending() {
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(KEY_URL).apply()
+        handler.removeCallbacksAndMessages(SEND_TOKEN)
+    }
+
+    companion object {
+        private const val PREFS = "jarvis_whatsapp_automation"
+        private const val KEY_URL = "pending_url"
+        private const val WHATSAPP_PACKAGE = "com.whatsapp"
+        private const val WHATSAPP_SEND_ID = "com.whatsapp:id/send"
+        private const val MAX_ATTEMPTS = 20
+        private val SEND_TOKEN = Any()
+        private var instance: WhatsAppAutomationService? = null
+
+        fun isEnabled(context: Context): Boolean {
+            val expected = ComponentName(context, WhatsAppAutomationService::class.java).flattenToString()
+            val enabled = Settings.Secure.getString(
+                context.contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            ).orEmpty()
+            return enabled.split(':').any { it.equals(expected, ignoreCase = true) }
+        }
+
+        fun queueAndStart(context: Context, number: String, message: String): Boolean {
+            var formatted = number.replace(" ", "").replace("-", "")
+            if (!formatted.startsWith("+") && !formatted.startsWith("91") && formatted.length == 10) {
+                formatted = "91" + formatted
+            }
+            formatted = formatted.removePrefix("+")
+            val encodedMsg = URLEncoder.encode(message, "UTF-8")
+            val url = "https://wa.me/" + formatted + "?text=" + encodedMsg
+
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_URL, url)
+                .apply()
+
+            val enabled = isEnabled(context)
+            if (!enabled) {
+                try {
+                    context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    })
+                } catch (_: Exception) {}
+                return false
+            }
+
+            try {
+                instance?.launchPendingIfAny()
+                    ?: context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                        setPackage(WHATSAPP_PACKAGE)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    })
+            } catch (_: Exception) {}
+            return true
+        }
+    }
+}
+''')
+
+          xml = Path("app/src/main/res/xml/whatsapp_accessibility_service.xml")
+          xml.write_text(r'''<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:notificationTimeout="100"
+    android:canRetrieveWindowContent="true"
+    android:canPerformGestures="false"
+    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows" />
+''')
+
+          manifest = Path("app/src/main/AndroidManifest.xml")
+          ms = manifest.read_text()
+          if "WhatsApp voice typing + automatic send" not in ms:
+              marker = "        <!-- Notification action receiver for direct reply & controls -->"
+              ms = ms.replace(marker, r'''        <!-- WhatsApp voice typing + automatic send (Accessibility permission) -->
+        <service
+            android:name=".service.WhatsAppAutomationService"
+            android:label="JARVIS WhatsApp Automation"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/whatsapp_accessibility_service" />
+        </service>
+
+''' + marker)
+          manifest.write_text(ms)
+
+          device = Path("app/src/main/java/com/example/service/DeviceController.kt")
+          ds2 = device.read_text()
+          old_send = '''    fun sendWhatsApp(number: String, message: String): Boolean {
+        return try {
+            var formatted = number.replace(" ", "").replace("-", "")
+            if (!formatted.startsWith("+") && !formatted.startsWith("91") && formatted.length == 10) {
+                formatted = "91" + formatted
+            }
+            formatted = formatted.removePrefix("+")
+            val encodedMsg = URLEncoder.encode(message, "UTF-8")
+            val url = "https://wa.me/$formatted?text=$encodedMsg"
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }'''
+          new_send = '''    fun isWhatsAppAutomationEnabled(): Boolean =
+        WhatsAppAutomationService.isEnabled(context)
+
+    fun sendWhatsApp(number: String, message: String): Boolean =
+        WhatsAppAutomationService.queueAndStart(context, number, message)'''
+          if old_send in ds2:
+              ds2 = ds2.replace(old_send, new_send)
+          device.write_text(ds2)
+
+          commander = Path("app/src/main/java/com/example/service/JarvisSmartCommander.kt")
+          cs = commander.read_text()
+          old_handle = '''    private suspend fun handleWhatsApp(c: String): CommandResult {
+        if (c.contains(" to ")) {
+            val parts = c.removePrefix("whatsapp ").split(" to ", limit = 2)
+            val msg = parts[0].trim()
+            val target = parts[1].trim()
+            val contactNum = dao.getPhoneNumberByName(target) ?: target
+            deviceController.sendWhatsApp(contactNum, msg)
+            return CommandResult("WhatsApp message bhej raha hu.", commandTag = "WHATSAPP")
+        }
+        val person = c.removePrefix("open whatsapp").removePrefix("whatsapp").replace("ko", "").replace("pe", "").trim()
+        if (person.isNotBlank()) {
+            val num = dao.getPhoneNumberByName(person) ?: person
+            deviceController.openWhatsAppChat(num)
+            return CommandResult("$person ka WhatsApp khol diya.", commandTag = "WHATSAPP")
+        }
+        deviceController.openApp("whatsapp")
+        return CommandResult("WhatsApp khol diya.", commandTag = "WHATSAPP")
+    }'''
+          new_handle = '''    private suspend fun handleWhatsApp(c: String): CommandResult {
+        if (c.contains(" to ")) {
+            val parts = c.removePrefix("whatsapp ").split(" to ", limit = 2)
+            val msg = parts[0].trim()
+            val target = parts[1].trim()
+            return sendWhatsAppTo(target, msg)
+        }
+
+        // Hindi/Hinglish voice form: "whatsapp Rohan ko hello bhejo"
+        val afterWhatsApp = c.removePrefix("whatsapp ").trim()
+        if (afterWhatsApp.contains(" ko ")) {
+            val parts = afterWhatsApp.split(" ko ", limit = 2)
+            val target = parts[0].trim()
+            val msg = parts[1]
+                .removeSuffix(" bhejo")
+                .removeSuffix(" bhej do")
+                .removeSuffix(" send karo")
+                .removeSuffix(" send")
+                .trim()
+            if (target.isNotBlank() && msg.isNotBlank()) {
+                return sendWhatsAppTo(target, msg)
+            }
+        }
+
+        // Natural form: "Rohan ko WhatsApp pe hello bhejo"
+        if (c.contains(" ko whatsapp ")) {
+            val parts = c.split(" ko whatsapp ", limit = 2)
+            val target = parts[0].trim()
+            val msg = parts[1]
+                .removePrefix("par ")
+                .removePrefix("pe ")
+                .removeSuffix(" bhejo")
+                .removeSuffix(" bhej do")
+                .removeSuffix(" send karo")
+                .removeSuffix(" send")
+                .trim()
+            if (target.isNotBlank() && msg.isNotBlank()) {
+                return sendWhatsAppTo(target, msg)
+            }
+        }
+
+        val person = c.removePrefix("open whatsapp").removePrefix("whatsapp").replace("ko", "").replace("pe", "").trim()
+        if (person.isNotBlank()) {
+            val num = dao.getPhoneNumberByName(person) ?: person
+            deviceController.openWhatsAppChat(num)
+            return CommandResult("$person ka WhatsApp khol diya.", commandTag = "WHATSAPP")
+        }
+        deviceController.openApp("whatsapp")
+        return CommandResult("WhatsApp khol diya.", commandTag = "WHATSAPP")
+    }
+
+    private suspend fun sendWhatsAppTo(target: String, message: String): CommandResult {
+        val contactNum = dao.getPhoneNumberByName(target) ?: target
+        val permissionReady = deviceController.isWhatsAppAutomationEnabled()
+        deviceController.sendWhatsApp(contactNum, message)
+        return if (permissionReady) {
+            CommandResult("WhatsApp khol kar message automatically send kar raha hu.", commandTag = "WHATSAPP")
+        } else {
+            CommandResult(
+                "Pehli baar JARVIS Accessibility permission Allow karein. Allow karte hi WhatsApp khulega aur message automatically send hoga.",
+                commandTag = "WHATSAPP"
+            )
+        }
+    }'''
+          if old_handle in cs:
+              cs = cs.replace(old_handle, new_handle)
+          cs = cs.replace('return if (candidate.isNotBlank()) candidate else "Delhi"', 'return if (candidate.isNotBlank()) candidate else "Dulalgram"')
+          commander.write_text(cs)
+
+          print("JARVIS WhatsApp automation patch applied: Accessibility permission, voice message parsing, auto-open and auto-send.")
           PY
 
       - name: Fix JARVIS Android configuration
