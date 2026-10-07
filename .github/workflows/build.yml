@@ -2,6 +2,7 @@ name: Build JARVIS APK
 
 on:
   push:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -12,539 +13,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract JARVIS ZIP
-        run: |
-          mkdir -p extracted
-          ZIP=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
-
-          if [ -z "$ZIP" ]; then
-            echo "ERROR: JARVIS ZIP not found"
-            exit 1
-          fi
-
-          echo "Using ZIP: $ZIP"
-          unzip -o -q "$ZIP" -d extracted
-
-      - name: Find Android project
-        run: |
-          FILE=$(find extracted -type f \
-            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
-            | head -n 1)
-
-          if [ -z "$FILE" ]; then
-            echo "ERROR: settings.gradle not found"
-            exit 1
-          fi
-
-          DIR=$(dirname "$FILE")
-          echo "PROJECT_DIR=$(cd "$DIR" && pwd)" >> "$GITHUB_ENV"
-          echo "Project: $DIR"
-
-
-      - name: Apply JARVIS UI and weather fixes
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          bar = Path("app/src/main/java/com/example/ui/components/VoiceControlBar.kt")
-          s = bar.read_text()
-          s = s.replace('QuickChip(label = "👥 Contacts", onClick = onOpenContacts, tag = "chip_contacts")',
-                        'QuickChip(label = "📞 Contacts", onClick = onOpenContacts, tag = "chip_contacts")')
-          s = s.replace('QuickChip(label = "⛅ Weather", onClick = { onSendCommand("weather") }, tag = "chip_weather")',
-                        'QuickChip(label = "⛅ Weather", onClick = { onSendCommand("weather Dulalgram") }, tag = "chip_weather")')
-          s = s.replace('QuickChip(label = "💡 Torch", onClick = { onSendCommand("flash on") }, tag = "chip_torch")\n            QuickChip(label = "🧮 25*40", onClick = { onSendCommand("calculate 25*40") }, tag = "chip_calc")',
-                        'QuickChip(label = "💡 Torch ON", onClick = { onSendCommand("flash on") }, tag = "chip_torch_on")\n            QuickChip(label = "🔦 Torch OFF", onClick = { onSendCommand("flash off") }, tag = "chip_torch_off")')
-          bar.write_text(s)
-
-          weather = Path("app/src/main/java/com/example/data/api/ExternalServices.kt")
-          ws = weather.read_text().replace('if (city.isBlank()) "Delhi"', 'if (city.isBlank()) "Dulalgram"')
-          weather.write_text(ws)
-
-          dialogs = Path("app/src/main/java/com/example/ui/components/JarvisDialogs.kt")
-          ds = dialogs.read_text().replace('CommandItem("Weather", "weather Delhi", "Get live weather report")',
-                                           'CommandItem("Weather", "weather Dulalgram", "Get live weather report")')
-          dialogs.write_text(ds)
-
-          # Make voice WhatsApp sending work through an explicit Accessibility permission.
-          service = Path("app/src/main/java/com/example/service/WhatsAppAutomationService.kt")
-          service.write_text(r'''package com.example.service
-
-import android.accessibilityservice.AccessibilityService
-import android.content.ComponentName
-import android.content.Context
-import android.content.Intent
-import android.net.Uri
-import android.os.Handler
-import android.os.Looper
-import android.provider.Settings
-import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
-import java.net.URLEncoder
-
-class WhatsAppAutomationService : AccessibilityService() {
-    private val handler = Handler(Looper.getMainLooper())
-    private var attempts = 0
-
-    override fun onServiceConnected() {
-        super.onServiceConnected()
-        instance = this
-        launchPendingIfAny()
-    }
-
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event?.packageName?.toString() == WHATSAPP_PACKAGE) {
-            if (hasPendingRequest()) scheduleSendAttempt()
-        }
-    }
-
-    override fun onInterrupt() = Unit
-
-    override fun onDestroy() {
-        handler.removeCallbacksAndMessages(SEND_TOKEN)
-        if (instance === this) instance = null
-        super.onDestroy()
-    }
-
-    private fun launchPendingIfAny() {
-        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val url = prefs.getString(KEY_URL, null) ?: return
-        try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                setPackage(WHATSAPP_PACKAGE)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            })
-            scheduleSendAttempt()
-        } catch (_: Exception) {
-            prefs.edit().remove(KEY_URL).apply()
-        }
-    }
-
-    private fun scheduleSendAttempt() {
-        handler.removeCallbacksAndMessages(SEND_TOKEN)
-        attempts = 0
-        handler.postAtTime({ tryClickSend() }, SEND_TOKEN, android.os.SystemClock.uptimeMillis() + 900)
-    }
-
-    private fun tryClickSend() {
-        if (!hasPendingRequest()) return
-        attempts++
-        val root = rootInActiveWindow
-        if (root != null && root.packageName?.toString() == WHATSAPP_PACKAGE) {
-            val sendNode = findSendNode(root)
-            if (sendNode != null && sendNode.isVisibleToUser && sendNode.isEnabled) {
-                if (sendNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                    clearPending()
-                    return
-                }
-            }
-        }
-        if (attempts < MAX_ATTEMPTS) {
-            handler.postDelayed({ tryClickSend() }, 500)
-        }
-    }
-
-    private fun findSendNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        try {
-            root.findAccessibilityNodeInfosByViewId(WHATSAPP_SEND_ID).firstOrNull()?.let { return it }
-        } catch (_: Exception) {}
-
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
-        while (queue.isNotEmpty()) {
-            val node = queue.removeFirst()
-            val text = node.text?.toString()?.trim()?.lowercase().orEmpty()
-            val desc = node.contentDescription?.toString()?.trim()?.lowercase().orEmpty()
-            val id = node.viewIdResourceName?.lowercase().orEmpty()
-            if ((text == "send" || desc == "send" || id.endsWith(":id/send")) && node.isClickable) {
-                return node
-            }
-            for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { queue.add(it) }
-            }
-        }
-        return null
-    }
-
-    private fun hasPendingRequest(): Boolean =
-        getSharedPreferences(PREFS, Context.MODE_PRIVATE).contains(KEY_URL)
-
-    private fun clearPending() {
-        getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(KEY_URL).apply()
-        handler.removeCallbacksAndMessages(SEND_TOKEN)
-    }
-
-    companion object {
-        private const val PREFS = "jarvis_whatsapp_automation"
-        private const val KEY_URL = "pending_url"
-        private const val WHATSAPP_PACKAGE = "com.whatsapp"
-        private const val WHATSAPP_SEND_ID = "com.whatsapp:id/send"
-        private const val MAX_ATTEMPTS = 20
-        private val SEND_TOKEN = Any()
-        private var instance: WhatsAppAutomationService? = null
-
-        fun isEnabled(context: Context): Boolean {
-            val expected = ComponentName(context, WhatsAppAutomationService::class.java).flattenToString()
-            val enabled = Settings.Secure.getString(
-                context.contentResolver,
-                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-            ).orEmpty()
-            return enabled.split(':').any { it.equals(expected, ignoreCase = true) }
-        }
-
-        fun queueAndStart(context: Context, number: String, message: String): Boolean {
-            var formatted = number.replace(" ", "").replace("-", "")
-            if (!formatted.startsWith("+") && !formatted.startsWith("91") && formatted.length == 10) {
-                formatted = "91" + formatted
-            }
-            formatted = formatted.removePrefix("+")
-            val encodedMsg = URLEncoder.encode(message, "UTF-8")
-            val url = "https://wa.me/" + formatted + "?text=" + encodedMsg
-
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit()
-                .putString(KEY_URL, url)
-                .apply()
-
-            val enabled = isEnabled(context)
-            if (!enabled) {
-                try {
-                    context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    })
-                } catch (_: Exception) {}
-                return false
-            }
-
-            try {
-                instance?.launchPendingIfAny()
-                    ?: context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                        setPackage(WHATSAPP_PACKAGE)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    })
-            } catch (_: Exception) {}
-            return true
-        }
-    }
-}
-''')
-
-          xml = Path("app/src/main/res/xml/whatsapp_accessibility_service.xml")
-          xml.write_text(r'''<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
-    android:accessibilityFeedbackType="feedbackGeneric"
-    android:notificationTimeout="100"
-    android:canRetrieveWindowContent="true"
-    android:canPerformGestures="false"
-    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows" />
-''')
-
-          manifest = Path("app/src/main/AndroidManifest.xml")
-          ms = manifest.read_text()
-          if "WhatsApp voice typing + automatic send" not in ms:
-              marker = "        <!-- Notification action receiver for direct reply & controls -->"
-              ms = ms.replace(marker, r'''        <!-- WhatsApp voice typing + automatic send (Accessibility permission) -->
-        <service
-            android:name=".service.WhatsAppAutomationService"
-            android:label="JARVIS WhatsApp Automation"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/whatsapp_accessibility_service" />
-        </service>
-
-''' + marker)
-          manifest.write_text(ms)
-
-          device = Path("app/src/main/java/com/example/service/DeviceController.kt")
-          ds2 = device.read_text()
-          new_send = '''    fun isWhatsAppAutomationEnabled(): Boolean =
-        WhatsAppAutomationService.isEnabled(context)
-
-    fun sendWhatsApp(number: String, message: String): Boolean =
-        WhatsAppAutomationService.queueAndStart(context, number, message)'''
-          ds2, replaced = re.subn(
-              r'    fun sendWhatsApp\(number: String, message: String\): Boolean \{.*?\n    \}\n\n    fun openWhatsAppChat',
-              new_send + '\n\n    fun openWhatsAppChat',
-              ds2,
-              count=1,
-              flags=re.S
-          )
-          if replaced != 1:
-              print("WARNING: sendWhatsApp patch did not match")
-          device.write_text(ds2)
-
-          commander = Path("app/src/main/java/com/example/service/JarvisSmartCommander.kt")
-          cs = commander.read_text()
-          old_handle = '''    private suspend fun handleWhatsApp(c: String): CommandResult {
-        if (c.contains(" to ")) {
-            val parts = c.removePrefix("whatsapp ").split(" to ", limit = 2)
-            val msg = parts[0].trim()
-            val target = parts[1].trim()
-            val contactNum = dao.getPhoneNumberByName(target) ?: target
-            deviceController.sendWhatsApp(contactNum, msg)
-            return CommandResult("WhatsApp message bhej raha hu.", commandTag = "WHATSAPP")
-        }
-        val person = c.removePrefix("open whatsapp").removePrefix("whatsapp").replace("ko", "").replace("pe", "").trim()
-        if (person.isNotBlank()) {
-            val num = dao.getPhoneNumberByName(person) ?: person
-            deviceController.openWhatsAppChat(num)
-            return CommandResult("$person ka WhatsApp khol diya.", commandTag = "WHATSAPP")
-        }
-        deviceController.openApp("whatsapp")
-        return CommandResult("WhatsApp khol diya.", commandTag = "WHATSAPP")
-    }'''
-          new_handle = '''    private suspend fun handleWhatsApp(c: String): CommandResult {
-        if (c.contains(" to ")) {
-            val parts = c.removePrefix("whatsapp ").split(" to ", limit = 2)
-            val msg = parts[0].trim()
-            val target = parts[1].trim()
-            return sendWhatsAppTo(target, msg)
-        }
-
-        // Hindi/Hinglish voice form: "whatsapp Rohan ko hello bhejo"
-        val afterWhatsApp = c.removePrefix("whatsapp ").trim()
-        if (afterWhatsApp.contains(" ko ")) {
-            val parts = afterWhatsApp.split(" ko ", limit = 2)
-            val target = parts[0].trim()
-            val msg = parts[1]
-                .removeSuffix(" bhejo")
-                .removeSuffix(" bhej do")
-                .removeSuffix(" send karo")
-                .removeSuffix(" send")
-                .trim()
-            if (target.isNotBlank() && msg.isNotBlank()) {
-                return sendWhatsAppTo(target, msg)
-            }
-        }
-
-        // Natural form: "Rohan ko WhatsApp pe hello bhejo"
-        if (c.contains(" ko whatsapp ")) {
-            val parts = c.split(" ko whatsapp ", limit = 2)
-            val target = parts[0].trim()
-            val msg = parts[1]
-                .removePrefix("par ")
-                .removePrefix("pe ")
-                .removeSuffix(" bhejo")
-                .removeSuffix(" bhej do")
-                .removeSuffix(" send karo")
-                .removeSuffix(" send")
-                .trim()
-            if (target.isNotBlank() && msg.isNotBlank()) {
-                return sendWhatsAppTo(target, msg)
-            }
-        }
-
-        val person = c.removePrefix("open whatsapp").removePrefix("whatsapp").replace("ko", "").replace("pe", "").trim()
-        if (person.isNotBlank()) {
-            val num = dao.getPhoneNumberByName(person) ?: person
-            deviceController.openWhatsAppChat(num)
-            return CommandResult("$person ka WhatsApp khol diya.", commandTag = "WHATSAPP")
-        }
-        deviceController.openApp("whatsapp")
-        return CommandResult("WhatsApp khol diya.", commandTag = "WHATSAPP")
-    }
-
-    private suspend fun sendWhatsAppTo(target: String, message: String): CommandResult {
-        val contactNum = dao.getPhoneNumberByName(target) ?: target
-        val permissionReady = deviceController.isWhatsAppAutomationEnabled()
-        deviceController.sendWhatsApp(contactNum, message)
-        return if (permissionReady) {
-            CommandResult("WhatsApp khol kar message automatically send kar raha hu.", commandTag = "WHATSAPP")
-        } else {
-            CommandResult(
-                "Pehli baar JARVIS Accessibility permission Allow karein. Allow karte hi WhatsApp khulega aur message automatically send hoga.",
-                commandTag = "WHATSAPP"
-            )
-        }
-    }'''
-          if old_handle in cs:
-              cs = cs.replace(old_handle, new_handle)
-          cs = cs.replace('return if (candidate.isNotBlank()) candidate else "Delhi"', 'return if (candidate.isNotBlank()) candidate else "Dulalgram"')
-          commander.write_text(cs)
-
-          # Import the phone's real Contacts into JARVIS after the user grants READ_CONTACTS.
-          vm = Path("app/src/main/java/com/example/ui/viewmodel/JarvisViewModel.kt")
-          vs = vm.read_text()
-          if "fun importDeviceContacts" not in vs:
-              vs = vs.replace(
-                  "import android.graphics.BitmapFactory\n",
-                  "import android.graphics.BitmapFactory\nimport android.provider.ContactsContract\n"
-              )
-              marker = "    fun updateDeviceStatus() {"
-              method = '''    fun importDeviceContacts(context: Context) {
-        if (androidx.core.content.ContextCompat.checkSelfPermission(
-                context,
-                android.Manifest.permission.READ_CONTACTS
-            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) return
-
-        viewModelScope.launch(Dispatchers.IO) {
-            val existing = dao.getAllContacts().associateBy { it.name.lowercase() + "|" + it.phoneNumber }
-            val resolver = context.contentResolver
-            val projection = arrayOf(
-                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
-                ContactsContract.CommonDataKinds.Phone.NUMBER
-            )
-            resolver.query(
-                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                projection,
-                null,
-                null,
-                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC"
-            )?.use { cursor ->
-                val nameIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
-                val numberIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
-                while (cursor.moveToNext()) {
-                    val name = cursor.getString(nameIndex)?.trim().orEmpty()
-                    val number = cursor.getString(numberIndex)?.trim().orEmpty()
-                    if (name.isNotBlank() && number.isNotBlank()) {
-                        val key = name.lowercase() + "|" + number
-                        if (!existing.containsKey(key)) {
-                            dao.insertContact(ContactEntity(name, number))
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-'''
-              vs = vs.replace(marker, method + marker)
-              vm.write_text(vs)
-
-          main = Path("app/src/main/java/com/example/ui/JarvisMainScreen.kt")
-          ms = main.read_text()
-          if "Manifest.permission.READ_CONTACTS" not in ms:
-              ms = ms.replace(
-                  "    val audioPermissionLauncher = rememberLauncherForActivityResult(",
-                  """    var hasContactsPermission by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
-        )
-    }
-
-    val contactsPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        hasContactsPermission = isGranted
-        if (isGranted && showContactsDialog) {
-            viewModel.importDeviceContacts(context)
-        }
-    }
-
-    androidx.compose.runtime.LaunchedEffect(showContactsDialog) {
-        if (showContactsDialog) {
-            if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
-                viewModel.importDeviceContacts(context)
-            } else {
-                contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
-            }
-        }
-    }
-
-    val audioPermissionLauncher = rememberLauncherForActivityResult("""
-              )
-          main.write_text(ms)
-
-          manifest = Path("app/src/main/AndroidManifest.xml")
-          m = manifest.read_text()
-          if 'android.permission.READ_CONTACTS' not in m:
-              m = m.replace(
-                  '<uses-permission android:name="android.permission.RECORD_AUDIO" />',
-                  '<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.READ_CONTACTS" />'
-              )
-          manifest.write_text(m)
-
-          print("JARVIS device contacts import patch applied.")
-          PY
-
-      - name: Fix JARVIS Android configuration
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          p = Path("app/build.gradle.kts")
-          s = p.read_text()
-
-          s = s.replace(
-              '  alias(libs.plugins.google.services)\n',
-              ''
-          )
-
-          s = s.replace(
-              'import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy\n',
-              ''
-          )
-
-          start = s.find('googleServices {')
-          if start != -1:
-              end = s.find('}', start)
-              if end != -1:
-                  s = s[:start] + s[end + 1:]
-
-          s = s.replace(
-              'compileSdk { version = release(36) { minorApiLevel = 1 } }',
-              'compileSdk = 36'
-          )
-
-          p.write_text(s)
-
-          # Fix keyboard/layout behavior in the Compose UI.
-          main = Path("app/src/main/java/com/example/MainActivity.kt")
-          ms = main.read_text()
-          ms = ms.replace("import androidx.activity.enableEdgeToEdge\n", "")
-          ms = ms.replace("        enableEdgeToEdge()\n", "")
-          main.write_text(ms)
-
-          bar = Path("app/src/main/java/com/example/ui/components/VoiceControlBar.kt")
-          bs = bar.read_text()
-          if "import androidx.compose.foundation.layout.imePadding" not in bs:
-              bs = bs.replace(
-                  "import androidx.compose.foundation.layout.height\n",
-                  "import androidx.compose.foundation.layout.height\nimport androidx.compose.foundation.layout.imePadding\n"
-              )
-          marker = "            .padding(horizontal = 12.dp, vertical = 8.dp)\n"
-          if marker in bs and ".imePadding()" not in bs:
-              bs = bs.replace(
-                  marker,
-                  marker + "            .imePadding()\n",
-                  1
-              )
-          bar.write_text(bs)
-          PY
-
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
 
       - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
         run: |
-          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+          sdkmanager "platform-tools"
+          sdkmanager "platforms;android-36"
+          sdkmanager "build-tools;36.0.0"
 
-          yes | sdkmanager --licenses || true
-
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-36" \
-            "build-tools;35.0.0"
-
-      - name: Setup Gradle
+      - name: Setup Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.3.1"
 
+      - name: Verify JARVIS project
+        run: |
+          test -f settings.gradle.kts
+          test -f app/build.gradle.kts
+          test -f gradle/libs.versions.toml
+          echo "JARVIS Android project found"
+
       - name: Create debug keystore
-        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           rm -f debug.keystore
 
@@ -559,33 +56,35 @@ class WhatsAppAutomationService : AccessibilityService() {
             -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
 
-          echo "Debug keystore created:"
-          ls -lh debug.keystore
+          test -s debug.keystore
 
       - name: Build Debug APK
-        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          gradle assembleDebug --no-daemon --stacktrace
-
-
-      - name: Package fixed source ZIP
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          rm -f ../JARVIS-FIXED.zip
-          zip -qr ../JARVIS-FIXED.zip . -x "app/build/*" ".gradle/*" "**/.gradle/*" "debug.keystore"
-          ls -lh ../JARVIS-FIXED.zip
-
-
-      - name: Upload fixed source ZIP
-        uses: actions/upload-artifact@v4
-        with:
-          name: JARVIS-FIXED-SOURCE
-          path: ${{ github.workspace }}/JARVIS-FIXED.zip
-          if-no-files-found: error
+          gradle assembleDebug \
+            --no-daemon \
+            --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Jarvis-APK
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          name: Jarvis-APK-FINAL
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Upload Source
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-FINAL-SOURCE
+          path: |
+            app/
+            gradle/
+            settings.gradle.kts
+            build.gradle.kts
+            gradle.properties
+            .env.example
+            metadata.json
+            README.md
+            JARVIS-ALL-FEATURES-README.md
+            FINAL-BUILD-NOTES.md
+            .github/workflows/build.yml
+          if-no-files-found: warn
