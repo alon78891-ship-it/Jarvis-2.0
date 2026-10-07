@@ -40,6 +40,15 @@ jobs:
           echo "PROJECT_DIR=$(cd "$DIR" && pwd)" >> "$GITHUB_ENV"
           echo "Project: $DIR"
 
+
+      - name: Inspect JARVIS quick actions
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo "=== Kotlin source files ==="
+          find app/src -type f -name "*.kt" | sort
+          echo "=== Quick-action matches ==="
+          grep -RniE "Weather|weather|Battery|battery|Torch|torch|Contacts|contacts|25\\*40|25[[:space:]]*\\*[[:space:]]*40" app/src --include="*.kt" || true
+
       - name: Fix JARVIS Android configuration
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
