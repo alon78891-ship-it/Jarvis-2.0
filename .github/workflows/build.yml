@@ -41,13 +41,21 @@ jobs:
           echo "Project: $DIR"
 
 
-      - name: Inspect JARVIS quick actions
+      - name: Inspect JARVIS feature source
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          echo "=== Kotlin source files ==="
-          find app/src -type f -name "*.kt" | sort
-          echo "=== Quick-action matches ==="
-          grep -RniE "Weather|weather|Battery|battery|Torch|torch|Contacts|contacts|25\\*40|25[[:space:]]*\\*[[:space:]]*40" app/src --include="*.kt" || true
+          echo "=== VoiceControlBar ==="
+          sed -n '65,135p' app/src/main/java/com/example/ui/components/VoiceControlBar.kt
+          echo "=== JarvisMainScreen contacts ==="
+          sed -n '180,265p' app/src/main/java/com/example/ui/JarvisMainScreen.kt
+          echo "=== ContactsDialog ==="
+          sed -n '637,790p' app/src/main/java/com/example/ui/components/JarvisDialogs.kt
+          echo "=== Weather service ==="
+          sed -n '1,70p' app/src/main/java/com/example/data/api/ExternalServices.kt
+          echo "=== Weather command ==="
+          sed -n '60,90p' app/src/main/java/com/example/service/JarvisSmartCommander.kt
+          echo "=== Weather city parser ==="
+          sed -n '250,285p' app/src/main/java/com/example/service/JarvisSmartCommander.kt
 
       - name: Fix JARVIS Android configuration
         working-directory: ${{ env.PROJECT_DIR }}
