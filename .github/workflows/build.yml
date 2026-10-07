@@ -71,6 +71,29 @@ jobs:
           )
 
           p.write_text(s)
+
+          # Fix keyboard/layout behavior in the Compose UI.
+          main = Path("app/src/main/java/com/example/MainActivity.kt")
+          ms = main.read_text()
+          ms = ms.replace("import androidx.activity.enableEdgeToEdge\n", "")
+          ms = ms.replace("        enableEdgeToEdge()\n", "")
+          main.write_text(ms)
+
+          bar = Path("app/src/main/java/com/example/ui/components/VoiceControlBar.kt")
+          bs = bar.read_text()
+          if "import androidx.compose.foundation.layout.imePadding" not in bs:
+              bs = bs.replace(
+                  "import androidx.compose.foundation.layout.height\n",
+                  "import androidx.compose.foundation.layout.height\nimport androidx.compose.foundation.layout.imePadding\n"
+              )
+          marker = "            .padding(horizontal = 12.dp, vertical = 8.dp)\n"
+          if marker in bs and ".imePadding()" not in bs:
+              bs = bs.replace(
+                  marker,
+                  marker + "            .imePadding()\n",
+                  1
+              )
+          bar.write_text(bs)
           PY
 
       - name: Setup Java 17
