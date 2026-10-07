@@ -46,6 +46,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           bar = Path("app/src/main/java/com/example/ui/components/VoiceControlBar.kt")
           s = bar.read_text()
@@ -262,31 +263,20 @@ class WhatsAppAutomationService : AccessibilityService() {
 
           device = Path("app/src/main/java/com/example/service/DeviceController.kt")
           ds2 = device.read_text()
-          old_send = '''    fun sendWhatsApp(number: String, message: String): Boolean {
-        return try {
-            var formatted = number.replace(" ", "").replace("-", "")
-            if (!formatted.startsWith("+") && !formatted.startsWith("91") && formatted.length == 10) {
-                formatted = "91" + formatted
-            }
-            formatted = formatted.removePrefix("+")
-            val encodedMsg = URLEncoder.encode(message, "UTF-8")
-            val url = "https://wa.me/$formatted?text=$encodedMsg"
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(intent)
-            true
-        } catch (e: Exception) {
-            false
-        }
-    }'''
           new_send = '''    fun isWhatsAppAutomationEnabled(): Boolean =
         WhatsAppAutomationService.isEnabled(context)
 
     fun sendWhatsApp(number: String, message: String): Boolean =
         WhatsAppAutomationService.queueAndStart(context, number, message)'''
-          if old_send in ds2:
-              ds2 = ds2.replace(old_send, new_send)
+          ds2, replaced = re.subn(
+              r'    fun sendWhatsApp\(number: String, message: String\): Boolean \{.*?\n    \}\n\n    fun openWhatsAppChat',
+              new_send + '\n\n    fun openWhatsAppChat',
+              ds2,
+              count=1,
+              flags=re.S
+          )
+          if replaced != 1:
+              print("WARNING: sendWhatsApp patch did not match")
           device.write_text(ds2)
 
           commander = Path("app/src/main/java/com/example/service/JarvisSmartCommander.kt")
