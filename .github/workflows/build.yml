@@ -103,7 +103,21 @@ jobs:
       - name: Fix WhatsApp automation compile error
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          python3 -c 'from pathlib import Path; p=Path("app/src/main/java/com/example/service/DeviceController.kt"); s=p.read_text(); marker="    fun sendWhatsApp(number: String, message: String): Boolean {"; add="    fun isWhatsAppAutomationEnabled(): Boolean = WhatsAppAutomationService.isEnabled(context)\\n\\n"; s=s if "fun isWhatsAppAutomationEnabled()" in s else s.replace(marker,add+marker); p.write_text(s); print("WhatsApp compile fix applied")'
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("app/src/main/java/com/example/service/DeviceController.kt")
+          s = p.read_text()
+
+          if "fun isWhatsAppAutomationEnabled()" not in s:
+              marker = "    fun sendWhatsApp(number: String, message: String): Boolean {"
+              addition = "    fun isWhatsAppAutomationEnabled(): Boolean = WhatsAppAutomationService.isEnabled(context)\\n\\n"
+              s = s.replace(marker, addition + marker, 1)
+
+          s = s.replace("\\n", "\n")
+          p.write_text(s)
+          print("WhatsApp compile fix applied")
+          PY
 
       - name: Create debug keystore
         working-directory: ${{ env.PROJECT_DIR }}
