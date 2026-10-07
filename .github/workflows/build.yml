@@ -70,7 +70,6 @@ jobs:
           PY
 
       - name: Fix JARVIS Android configuration
-      - name: Fix JARVIS Android configuration
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           python3 - <<'PY'
