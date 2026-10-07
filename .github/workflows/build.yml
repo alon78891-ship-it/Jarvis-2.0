@@ -105,18 +105,60 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           p = Path("app/src/main/java/com/example/service/DeviceController.kt")
           s = p.read_text()
 
-          if "fun isWhatsAppAutomationEnabled()" not in s:
-              marker = "    fun sendWhatsApp(number: String, message: String): Boolean {"
-              addition = "    fun isWhatsAppAutomationEnabled(): Boolean = WhatsAppAutomationService.isEnabled(context)\\n\\n"
-              s = s.replace(marker, addition + marker, 1)
+          start = s.find("    // 5. WHATSAPP MESSAGE & CHAT")
+          end = s.find("    // 6. UNIVERSAL APP OPENER")
 
-          s = s.replace("\\n", "\n")
+          if start == -1 or end == -1:
+              raise SystemExit("WhatsApp section anchors not found")
+
+          block = '''    // 5. WHATSAPP MESSAGE & CHAT
+              fun isWhatsAppAutomationEnabled(): Boolean =
+                  WhatsAppAutomationService.isEnabled(context)
+
+              fun sendWhatsApp(number: String, message: String): Boolean {
+                  return try {
+                      var formatted = number.replace(" ", "").replace("-", "")
+                      if (!formatted.startsWith("+") && !formatted.startsWith("91") && formatted.length == 10) {
+                          formatted = "91$formatted"
+                      }
+                      formatted = formatted.removePrefix("+")
+                      val encodedMsg = URLEncoder.encode(message, "UTF-8")
+                      val url = "https://wa.me/$formatted?text=$encodedMsg"
+                      WhatsAppAutomationService.queueAndStart(context, formatted, message)
+                  } catch (_: Exception) {
+                      false
+                  }
+              }
+
+              fun openWhatsAppChat(number: String): Boolean {
+                  return try {
+                      var formatted = number.replace(" ", "").replace("-", "")
+                      if (!formatted.startsWith("+") && !formatted.startsWith("91") && formatted.length == 10) {
+                          formatted = "91$formatted"
+                      }
+                      formatted = formatted.removePrefix("+")
+                      val url = "https://wa.me/$formatted"
+                      val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                      }
+                      context.startActivity(intent)
+                      true
+                  } catch (_: Exception) {
+                      false
+                  }
+              }
+
+          '''
+
+          # Remove unused local values from the generated send method by replacing the block cleanly.
+          s = s[:start] + block + s[end:]
           p.write_text(s)
-          print("WhatsApp compile fix applied")
+          print("WhatsApp section replaced with clean Kotlin")
           PY
 
       - name: Create debug keystore
