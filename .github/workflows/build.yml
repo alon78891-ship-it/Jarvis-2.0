@@ -41,22 +41,35 @@ jobs:
           echo "Project: $DIR"
 
 
-      - name: Inspect JARVIS feature source
+      - name: Apply JARVIS UI and weather fixes
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          echo "=== VoiceControlBar ==="
-          sed -n '65,135p' app/src/main/java/com/example/ui/components/VoiceControlBar.kt
-          echo "=== JarvisMainScreen contacts ==="
-          sed -n '180,265p' app/src/main/java/com/example/ui/JarvisMainScreen.kt
-          echo "=== ContactsDialog ==="
-          sed -n '637,790p' app/src/main/java/com/example/ui/components/JarvisDialogs.kt
-          echo "=== Weather service ==="
-          sed -n '1,70p' app/src/main/java/com/example/data/api/ExternalServices.kt
-          echo "=== Weather command ==="
-          sed -n '60,90p' app/src/main/java/com/example/service/JarvisSmartCommander.kt
-          echo "=== Weather city parser ==="
-          sed -n '250,285p' app/src/main/java/com/example/service/JarvisSmartCommander.kt
+          python3 - <<'PY'
+          from pathlib import Path
 
+          bar = Path("app/src/main/java/com/example/ui/components/VoiceControlBar.kt")
+          s = bar.read_text()
+          s = s.replace('QuickChip(label = "👥 Contacts", onClick = onOpenContacts, tag = "chip_contacts")',
+                        'QuickChip(label = "📞 Contacts", onClick = onOpenContacts, tag = "chip_contacts")')
+          s = s.replace('QuickChip(label = "⛅ Weather", onClick = { onSendCommand("weather") }, tag = "chip_weather")',
+                        'QuickChip(label = "⛅ Weather", onClick = { onSendCommand("weather Dulalgram") }, tag = "chip_weather")')
+          s = s.replace('QuickChip(label = "💡 Torch", onClick = { onSendCommand("flash on") }, tag = "chip_torch")\n            QuickChip(label = "🧮 25*40", onClick = { onSendCommand("calculate 25*40") }, tag = "chip_calc")',
+                        'QuickChip(label = "💡 Torch ON", onClick = { onSendCommand("flash on") }, tag = "chip_torch_on")\n            QuickChip(label = "🔦 Torch OFF", onClick = { onSendCommand("flash off") }, tag = "chip_torch_off")')
+          bar.write_text(s)
+
+          weather = Path("app/src/main/java/com/example/data/api/ExternalServices.kt")
+          ws = weather.read_text().replace('if (city.isBlank()) "Delhi"', 'if (city.isBlank()) "Dulalgram"')
+          weather.write_text(ws)
+
+          dialogs = Path("app/src/main/java/com/example/ui/components/JarvisDialogs.kt")
+          ds = dialogs.read_text().replace('CommandItem("Weather", "weather Delhi", "Get live weather report")',
+                                           'CommandItem("Weather", "weather Dulalgram", "Get live weather report")')
+          dialogs.write_text(ds)
+
+          print("JARVIS fixes applied: Contacts, Dulalgram Weather, Torch ON/OFF, removed 25*40 quick chip.")
+          PY
+
+      - name: Fix JARVIS Android configuration
       - name: Fix JARVIS Android configuration
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
@@ -159,6 +172,22 @@ jobs:
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           gradle assembleDebug --no-daemon --stacktrace
+
+
+      - name: Package fixed source ZIP
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          rm -f ../JARVIS-FIXED.zip
+          zip -qr ../JARVIS-FIXED.zip . -x "app/build/*" ".gradle/*" "**/.gradle/*" "debug.keystore"
+          ls -lh ../JARVIS-FIXED.zip
+
+
+      - name: Upload fixed source ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-FIXED-SOURCE
+          path: ${{ env.PROJECT_DIR }}/../JARVIS-FIXED.zip
+          if-no-files-found: error
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
