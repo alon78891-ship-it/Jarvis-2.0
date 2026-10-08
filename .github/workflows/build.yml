@@ -159,6 +159,15 @@ jobs:
           s = s[:start] + block + s[end:]
           p.write_text(s)
           print("WhatsApp section replaced with clean Kotlin")
+          # Fix Kotlin non-local return syntax in the background service.
+          bg = Path("app/src/main/java/com/example/service/JarvisBackgroundService.kt")
+          bs = bg.read_text()
+          bs2 = bs.replace("return@when", "return START_STICKY")
+          if bs2 != bs:
+              bg.write_text(bs2)
+              print("Background service return syntax fixed")
+          else:
+              print("Background service return syntax already correct")
           PY
 
       - name: Create debug keystore
