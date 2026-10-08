@@ -115,3 +115,5 @@ jobs:
           name: Jarvis-APK
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+# JARVIS build trigger: 2026-10-08
