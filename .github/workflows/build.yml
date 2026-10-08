@@ -13,7 +13,6 @@ jobs:
   build:
     name: Build JARVIS APK
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -31,13 +30,8 @@ jobs:
         shell: bash
         run: |
           set -e
-          # sdkmanager may finish before 'yes' exits; ignore the harmless broken pipe.
           yes | sdkmanager --licenses || true
-
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Find and extract JARVIS Android project
         shell: bash
@@ -52,18 +46,12 @@ jobs:
             rm -rf extracted/*
             unzip -q "$ZIP" -d extracted || continue
 
-            SETTINGS=$(find extracted -type f \\
-              \\( -name "settings.gradle.kts" -o -name "settings.gradle" \\) \\
-              -print -quit)
-
-            if [ -z "$SETTINGS" ]; then
-              continue
-            fi
+            SETTINGS=$(find extracted -type f \( -name "settings.gradle.kts" -o -name "settings.gradle" \) -print -quit)
+            [ -n "$SETTINGS" ] || continue
 
             ROOT=$(dirname "$SETTINGS")
 
-            if [ -f "$ROOT/app/src/main/AndroidManifest.xml" ] && \\
-               { [ -f "$ROOT/app/build.gradle.kts" ] || [ -f "$ROOT/app/build.gradle" ]; }; then
+            if [ -f "$ROOT/app/src/main/AndroidManifest.xml" ] && { [ -f "$ROOT/app/build.gradle.kts" ] || [ -f "$ROOT/app/build.gradle" ]; }; then
               echo "Valid Android project found: $ROOT"
               echo "ROOT=$ROOT" >> "$GITHUB_ENV"
               FOUND=true
@@ -73,7 +61,6 @@ jobs:
 
           if [ "$FOUND" != "true" ]; then
             echo "ERROR: No ZIP containing a valid Android Gradle project was found."
-            echo "Repository files:"
             find . -maxdepth 4 -type f | sort | head -200
             exit 1
           fi
@@ -95,7 +82,10 @@ jobs:
         run: |
           set -e
           APK="$ROOT/app/build/outputs/apk/debug/app-debug.apk"
-          test -f "$APK" || { echo "ERROR: APK was not generated."; exit 1; }
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: APK was not generated."
+            exit 1
+          fi
           echo "JARVIS APK BUILD SUCCESS"
           ls -lh "$APK"
 
