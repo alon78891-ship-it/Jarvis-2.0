@@ -2,7 +2,6 @@ name: Build JARVIS APK
 
 on:
   push:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -13,9 +12,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Find JARVIS ZIP
+      - name: Extract JARVIS ZIP
         run: |
-          ZIP=$(find . -maxdepth 1 -type f -iname "*.zip" | head -n 1)
+          mkdir -p extracted
+
+          ZIP=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
 
           if [ -z "$ZIP" ]; then
             echo "ERROR: JARVIS ZIP not found"
@@ -23,16 +24,7 @@ jobs:
           fi
 
           echo "Using ZIP: $ZIP"
-          echo "JARVIS_ZIP=$ZIP" >> "$GITHUB_ENV"
-
-      - name: Extract JARVIS ZIP
-        run: |
-          rm -rf extracted
-          mkdir -p extracted
-
-          unzip -o -q "$JARVIS_ZIP" -d extracted
-
-          echo "ZIP extracted successfully"
+          unzip -o -q "$ZIP" -d extracted
 
       - name: Find Android project
         run: |
@@ -41,16 +33,17 @@ jobs:
             | head -n 1)
 
           if [ -z "$FILE" ]; then
-            echo "ERROR: settings.gradle not found"
+            echo "ERROR: Android project not found"
             exit 1
           fi
 
           DIR=$(dirname "$FILE")
 
-          echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
+          echo "PROJECT_DIR=$(cd "$DIR" && pwd)" >> "$GITHUB_ENV"
 
-          echo "Android project:"
-          echo "$DIR"
+          echo "Found project:"
+          cd "$DIR"
+          pwd
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -63,118 +56,21 @@ jobs:
           export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
 
-          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
-
           yes | sdkmanager --licenses || true
 
           sdkmanager \
             "platform-tools" \
-            "platforms;android-36" \
+            "platforms;android-35" \
             "build-tools;35.0.0"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "9.3.1"
+          gradle-version: "8.10.2"
 
-      - name: Verify Android project
+      - name: Create Debug Keystore
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          if [ -f settings.gradle.kts ]; then
-            echo "settings.gradle.kts OK"
-          elif [ -f settings.gradle ]; then
-            echo "settings.gradle OK"
-          else
-            echo "ERROR: settings.gradle missing"
-            exit 1
-          fi
-
-          if [ -f app/build.gradle.kts ]; then
-            echo "app/build.gradle.kts OK"
-          elif [ -f app/build.gradle ]; then
-            echo "app/build.gradle OK"
-          else
-            echo "ERROR: app build file missing"
-            exit 1
-          fi
-
-      - name: Fix WhatsApp automation compile error
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          p = Path("app/src/main/java/com/example/service/DeviceController.kt")
-          s = p.read_text()
-
-          start = s.find("    // 5. WHATSAPP MESSAGE & CHAT")
-          end = s.find("    // 6. UNIVERSAL APP OPENER")
-
-          if start == -1 or end == -1:
-              raise SystemExit("WhatsApp section anchors not found")
-
-          block = '''    // 5. WHATSAPP MESSAGE & CHAT
-              fun isWhatsAppAutomationEnabled(): Boolean =
-                  WhatsAppAutomationService.isEnabled(context)
-
-              fun sendWhatsApp(number: String, message: String): Boolean {
-                  return try {
-                      var formatted = number.replace(" ", "").replace("-", "")
-                      if (!formatted.startsWith("+") && !formatted.startsWith("91") && formatted.length == 10) {
-                          formatted = "91$formatted"
-                      }
-                      formatted = formatted.removePrefix("+")
-                      val encodedMsg = URLEncoder.encode(message, "UTF-8")
-                      val url = "https://wa.me/$formatted?text=$encodedMsg"
-                      WhatsAppAutomationService.queueAndStart(context, formatted, message)
-                  } catch (_: Exception) {
-                      false
-                  }
-              }
-
-              fun openWhatsAppChat(number: String): Boolean {
-                  return try {
-                      var formatted = number.replace(" ", "").replace("-", "")
-                      if (!formatted.startsWith("+") && !formatted.startsWith("91") && formatted.length == 10) {
-                          formatted = "91$formatted"
-                      }
-                      formatted = formatted.removePrefix("+")
-                      val url = "https://wa.me/$formatted"
-                      val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                      }
-                      context.startActivity(intent)
-                      true
-                  } catch (_: Exception) {
-                      false
-                  }
-              }
-
-          '''
-
-          # Remove unused local values from the generated send method by replacing the block cleanly.
-          s = s[:start] + block + s[end:]
-          p.write_text(s)
-          print("WhatsApp section replaced with clean Kotlin")
-          # Fix Kotlin non-local return syntax in the background service.
-          bg = Path("app/src/main/java/com/example/service/JarvisBackgroundService.kt")
-          bs = bg.read_text()
-          bs2 = bs.replace("return@when", "return START_STICKY")
-          if bs2 != bs:
-              bg.write_text(bs2)
-              print("Background service return syntax fixed")
-          else:
-              print("Background service return syntax already correct")
-          PY
-
-      - name: Create debug keystore
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          rm -f debug.keystore
-
           keytool -genkeypair \
             -v \
             -keystore debug.keystore \
@@ -186,8 +82,6 @@ jobs:
             -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
 
-          ls -lh debug.keystore
-
       - name: Build Debug APK
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
@@ -198,13 +92,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Jarvis-APK-FINAL
+          name: Jarvis-APK
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-
-      - name: Upload Fixed Source
-        uses: actions/upload-artifact@v4
-        with:
-          name: JARVIS-FINAL-SOURCE
-          path: extracted/
           if-no-files-found: error
