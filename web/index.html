@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>JARVIS Voice Interface</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:Segoe UI,Tahoma,sans-serif}
+body{background:transparent;overflow:hidden;height:100vh;width:100vw;display:flex;align-items:flex-end;justify-content:center}
+#jarvis-panel{width:100%;max-width:600px;background:linear-gradient(to top,rgba(15,5,10,.98),rgba(25,10,18,.95));border-radius:24px 24px 0 0;box-shadow:0 -10px 35px rgba(255,20,147,.25);border-top:2px solid #ff1493;padding:25px;transform:translateY(100%);transition:.4s;display:flex;flex-direction:column;align-items:center;gap:20px;z-index:9999}
+#jarvis-panel.active{transform:translateY(0)}#status-text{color:#ffb6c1;font-size:1.1rem;text-align:center;text-shadow:0 0 10px rgba(255,20,147,.5)}
+#transcript-text{color:#fff;font-size:1rem;opacity:.85;min-height:24px;text-align:center;font-style:italic}
+.arc-reactor-container{position:relative;width:110px;height:110px;display:flex;align-items:center;justify-content:center}
+.glowing-circle{width:80px;height:80px;border-radius:50%;background:radial-gradient(circle,#ff69b4 20%,#ff1493 70%,transparent);box-shadow:0 0 30px #ff1493,0 0 60px #ff69b4,inset 0 0 15px #fff;border:3px solid #ffb6c1}
+.listening .glowing-circle{animation:pulse 1.2s infinite;box-shadow:0 0 45px #ff1493,0 0 90px #ff69b4}
+.processing-ring{position:absolute;width:105px;height:105px;border-radius:50%;border:3px dashed #ff1493;opacity:0}.processing .processing-ring{opacity:1;animation:rotate 2s linear infinite}
+@keyframes pulse{50%{transform:scale(1.1);opacity:1}}@keyframes rotate{to{transform:rotate(360deg)}}
+#background-indicator{position:fixed;top:15px;right:15px;background:rgba(20,5,12,.8);border:1px solid #ff1493;color:#ffb6c1;padding:8px 14px;border-radius:20px;font-size:.8rem;z-index:10000}
+.dot{display:inline-block;width:8px;height:8px;background:#ff1493;border-radius:50%;margin-right:8px;box-shadow:0 0 8px #ff1493}
+#permission-btn{display:none;border:1px solid #ff1493;background:rgba(255,20,147,.12);color:#ffb6c1;border-radius:18px;padding:8px 14px}.show{display:block!important}
+</style></head>
+<body><div id="background-indicator"><span class="dot"></span>Background "Hey JARVIS" Service Active</div>
+<div id="jarvis-panel"><div id="status-text">Listening for "Hey JARVIS"...</div><div class="arc-reactor-container" id="reactor-box"><div class="processing-ring"></div><div class="glowing-circle"></div></div><div id="transcript-text">Say something...</div><button id="permission-btn">Enable Microphone</button></div>
+<script>
+(()=>{const p=document.getElementById('jarvis-panel'),s=document.getElementById('status-text'),t=document.getElementById('transcript-text'),r=document.getElementById('reactor-box'),b=document.getElementById('permission-btn'),SR=window.SpeechRecognition||window.webkitSpeechRecognition;let rec=null,running=false,restart=null,timer=null,hideTimer=null;
+const wake=['hey jarvis','he jarvis','hi jarvis','ok jarvis','okay jarvis','jarvis ji','jarvis'];
+function show(){p.classList.add('active')}function hide(){p.classList.remove('active');r.className='arc-reactor-container'}
+function clean(x){let q=x.toLowerCase().trim();wake.forEach(w=>{q=q.split(w).join(' ')});return q.replace(/\s+/g,' ').trim()}
+function send(q){try{if(window.AndroidBridge&&typeof window.AndroidBridge.postMessage==='function'){window.AndroidBridge.postMessage(q);return true}}catch(e){}return false}
+function trigger(x){clearTimeout(timer);clearTimeout(hideTimer);let q=clean(x);show();r.className='arc-reactor-container listening';s.textContent='JARVIS is Listening...';t.textContent=q?'"'+q+'"':'Listening...';timer=setTimeout(()=>{r.className='arc-reactor-container processing';s.textContent='Processing Command...';if(!send(q))s.textContent='Android Bridge not connected';hideTimer=setTimeout(hide,3500)},700)}
+function start(){if(!rec||running)return;try{rec.start()}catch(e){}}
+function setup(){if(!SR){s.textContent='Speech API Not Supported';b.classList.add('show');return}rec=new SR();rec.continuous=true;rec.interimResults=false;rec.lang='en-IN';rec.maxAlternatives=1;
+rec.onstart=()=>{running=true;b.classList.remove('show')};rec.onresult=e=>{for(let i=e.resultIndex;i<e.results.length;i++){if(!e.results[i].isFinal)continue;let x=e.results[i][0].transcript.toLowerCase().trim();if(wake.some(w=>x.includes(w)))trigger(x)}};
+rec.onerror=e=>{running=false;if(e.error==='not-allowed'||e.error==='service-not-allowed'){s.textContent='Microphone permission required';b.classList.add('show')}else if(e.error==='audio-capture')s.textContent='Microphone unavailable'};
+rec.onend=()=>{running=false;clearTimeout(restart);restart=setTimeout(start,350)};start()}
+b.onclick=()=>{try{navigator.mediaDevices&&navigator.mediaDevices.getUserMedia({audio:true}).then(x=>{x.getTracks().forEach(y=>y.stop());b.classList.remove('show');start()}).catch(()=>s.textContent='Please allow microphone permission in Android settings')}catch(e){}};
+window.JARVIS_UI={show,hide,trigger,send,start};setup()})()
+</script></body></html>
