@@ -60,6 +60,119 @@ jobs:
           cd "$DIR"
           pwd
 
+
+      - name: Add JARVIS Accessibility control
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          mkdir -p app/src/main/res/xml app/src/main/res/values
+          cat > app/src/main/res/xml/accessibility_service_config.xml <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeAllMask"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:notificationTimeout="100"
+              android:canRetrieveWindowContent="true"
+              android:canPerformGestures="true"
+              android:description="@string/accessibility_service_description" />
+          XML
+          cat > app/src/main/res/values/strings.xml <<'XML'
+          <resources>
+              <string name="app_name">JARVIS</string>
+              <string name="accessibility_service_description">JARVIS uses Accessibility access to scroll reels, find Like, Unlike and Comment controls, and perform UI actions explicitly requested by the user.</string>
+          </resources>
+          XML
+          cat > app/src/main/java/com/jarvis/assistant/JarvisAccessibilityService.kt <<'KOTLIN'
+          package com.jarvis.assistant
+
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.graphics.Path
+          import android.view.accessibility.AccessibilityNodeInfo
+          import java.util.Locale
+
+          class JarvisAccessibilityService : AccessibilityService() {
+              companion object {
+                  @Volatile var instance: JarvisAccessibilityService? = null
+              }
+              override fun onServiceConnected() { super.onServiceConnected(); instance = this }
+              override fun onDestroy() { if (instance === this) instance = null; super.onDestroy() }
+              override fun onAccessibilityEvent(event: android.view.accessibility.AccessibilityEvent?) {}
+              override fun onInterrupt() {}
+
+              fun execute(command: String): Boolean {
+                  val c = command.lowercase(Locale.ROOT).trim()
+                  return when {
+                      c.contains("scroll down") || c.contains("next reel") || c.contains("reel next") -> swipe(true)
+                      c.contains("scroll up") || c.contains("previous reel") || c.contains("reel up") -> swipe(false)
+                      c.contains("stop scrolling") -> true
+                      c.contains("unlike") -> clickByWords(listOf("unlike", "remove like"))
+                      c.contains("like") -> clickByWords(listOf("like"))
+                      c.contains("comment") -> clickByWords(listOf("comment", "comments"))
+                      c.contains("pause") -> clickByWords(listOf("pause"))
+                      c.contains("play") -> clickByWords(listOf("play"))
+                      else -> false
+                  }
+              }
+
+              private fun swipe(down: Boolean): Boolean {
+                  val dm = resources.displayMetrics
+                  val x = dm.widthPixels * 0.5f
+                  val start = if (down) dm.heightPixels * 0.30f else dm.heightPixels * 0.75f
+                  val end = if (down) dm.heightPixels * 0.75f else dm.heightPixels * 0.30f
+                  val path = Path().apply { moveTo(x, start); lineTo(x, end) }
+                  val gesture = GestureDescription.Builder()
+                      .addStroke(GestureDescription.StrokeDescription(path, 0, 450))
+                      .build()
+                  return dispatchGesture(gesture, null, null)
+              }
+
+              private fun clickByWords(words: List<String>): Boolean {
+                  val root = rootInActiveWindow ?: return false
+                  val queue = ArrayDeque<AccessibilityNodeInfo>()
+                  queue.add(root)
+                  while (queue.isNotEmpty()) {
+                      val node = queue.removeFirst()
+                      val text = node.text?.toString()?.lowercase(Locale.ROOT).orEmpty()
+                      val desc = node.contentDescription?.toString()?.lowercase(Locale.ROOT).orEmpty()
+                      if (words.any { text.contains(it) || desc.contains(it) } && node.isVisibleToUser) {
+                          if (node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+                          var parent = node.parent
+                          repeat(4) {
+                              if (parent != null && parent.isClickable && parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+                              parent = parent?.parent
+                          }
+                      }
+                      for (i in 0 until node.childCount) node.getChild(i)?.let(queue::add)
+                  }
+                  return false
+              }
+          }
+          KOTLIN
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("app/src/main/AndroidManifest.xml")
+          s = p.read_text()
+          marker = "    <application"
+          service = '''    <service
+                  android:name=".JarvisAccessibilityService"
+                  android:label="JARVIS Accessibility"
+                  android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+                  android:exported="true">
+                  <intent-filter>
+                      <action android:name="android.accessibilityservice.AccessibilityService" />
+                  </intent-filter>
+                  <meta-data
+                      android:name="android.accessibilityservice"
+                      android:resource="@xml/accessibility_service_config" />
+              </service>
+
+          '''
+          if "JarvisAccessibilityService" not in s:
+              s = s.replace(marker, service + marker)
+          p.write_text(s)
+          PY
+
       - name: Fix Java/Kotlin JVM target
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
