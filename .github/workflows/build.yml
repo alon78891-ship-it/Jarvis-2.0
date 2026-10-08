@@ -26,6 +26,21 @@ jobs:
           echo "Using ZIP: $ZIP"
           unzip -o -q "$ZIP" -d extracted
 
+      - name: Overlay latest JARVIS Web UI
+        run: |
+          UI=$(find web -maxdepth 1 -type f -name "index.html" | head -n 1)
+          if [ -z "$UI" ]; then
+            echo "ERROR: web/index.html not found"
+            exit 1
+          fi
+          ASSET=$(find extracted -type d -path "*/app/src/main/assets" | head -n 1)
+          if [ -z "$ASSET" ]; then
+            echo "ERROR: Android assets directory not found"
+            exit 1
+          fi
+          cp "$UI" "$ASSET/index.html"
+          echo "Overlayed latest JARVIS UI into $ASSET/index.html"
+
       - name: Find Android project
         run: |
           FILE=$(find extracted -type f \
