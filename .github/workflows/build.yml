@@ -102,14 +102,15 @@ jobs:
               print("Inspecting resource file for build diagnostics.")
 
           strings_path.parent.mkdir(parents=True, exist_ok=True)
-          if not strings_path.exists():
-              strings_path.write_text(
-                  '<?xml version="1.0" encoding="utf-8"?>\\n'
-                  '<resources>\\n'
-                  '    <string name="accessibility_service_description">JARVIS authorized UI control service for user-requested navigation and automation.</string>\\n'
-                  '</resources>\\n',
-                  encoding="utf-8"
-              )
+          strings_path.write_text(
+              """<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">JARVIS authorized UI control service for user-requested navigation and automation.</string>
+</resources>
+""",
+              encoding="utf-8"
+          )
+          print("Wrote valid Android strings XML resource.")
           PY
           else
             echo "Accessibility config not found at expected path; listing XML resources."
