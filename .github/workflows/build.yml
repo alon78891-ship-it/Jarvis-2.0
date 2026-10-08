@@ -1,304 +1,79 @@
-name: Build JARVIS APK
+name: Build JARVIS FINAL APK
 
 on:
   push:
+    branches:
+      - main
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      # 1. Source code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract JARVIS ZIP
-        run: |
-          mkdir -p extracted
-
-          ZIP=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
-
-          if [ -z "$ZIP" ]; then
-            echo "ERROR: JARVIS ZIP not found"
-            exit 1
-          fi
-
-          echo "Using ZIP: $ZIP"
-          unzip -o -q "$ZIP" -d extracted
-
-      - name: Overlay latest JARVIS Web UI
-        run: |
-          UI=$(find web -maxdepth 1 -type f -name "index.html" | head -n 1)
-          if [ -z "$UI" ]; then
-            echo "ERROR: web/index.html not found"
-            exit 1
-          fi
-          ASSET=$(find extracted -type d -path "*/app/src/main/assets" | head -n 1)
-          if [ -z "$ASSET" ]; then
-            echo "ERROR: Android assets directory not found"
-            exit 1
-          fi
-          cp "$UI" "$ASSET/index.html"
-          echo "Overlayed latest JARVIS UI into $ASSET/index.html"
-
-      - name: Find Android project
-        run: |
-          FILE=$(find extracted -type f \
-            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
-            | head -n 1)
-
-          if [ -z "$FILE" ]; then
-            echo "ERROR: Android project not found"
-            exit 1
-          fi
-
-          DIR=$(dirname "$FILE")
-
-          echo "PROJECT_DIR=$(cd "$DIR" && pwd)" >> "$GITHUB_ENV"
-
-          echo "Found project:"
-          cd "$DIR"
-          pwd
-
-
-      - name: Add JARVIS Accessibility control
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          mkdir -p app/src/main/res/xml app/src/main/res/values
-          cat > app/src/main/res/xml/accessibility_service_config.xml <<'XML'
-          <?xml version="1.0" encoding="utf-8"?>
-          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-              android:accessibilityEventTypes="typeAllMask"
-              android:accessibilityFeedbackType="feedbackGeneric"
-              android:notificationTimeout="100"
-              android:canRetrieveWindowContent="true"
-              android:canPerformGestures="true"
-              android:description="@string/accessibility_service_description" />
-          XML
-          cat > app/src/main/res/values/strings.xml <<'XML'
-          <resources>
-              <string name="app_name">JARVIS</string>
-              <string name="accessibility_service_description">JARVIS uses Accessibility access to scroll reels, find Like, Unlike and Comment controls, and perform UI actions explicitly requested by the user.</string>
-          </resources>
-          XML
-          cat > app/src/main/java/com/jarvis/assistant/JarvisAccessibilityService.kt <<'KOTLIN'
-          package com.jarvis.assistant
-
-          import android.accessibilityservice.AccessibilityService
-          import android.accessibilityservice.GestureDescription
-          import android.graphics.Path
-          import android.view.accessibility.AccessibilityNodeInfo
-          import java.util.Locale
-
-          class JarvisAccessibilityService : AccessibilityService() {
-              companion object {
-                  @Volatile var instance: JarvisAccessibilityService? = null
-              }
-              override fun onServiceConnected() { super.onServiceConnected(); instance = this }
-              override fun onDestroy() { if (instance === this) instance = null; super.onDestroy() }
-              override fun onAccessibilityEvent(event: android.view.accessibility.AccessibilityEvent?) {}
-              override fun onInterrupt() {}
-
-              fun execute(command: String): Boolean {
-                  val c = command.lowercase(Locale.ROOT).trim()
-                  return when {
-                      c.contains("scroll down") || c.contains("next reel") || c.contains("reel next") -> swipe(true)
-                      c.contains("scroll up") || c.contains("previous reel") || c.contains("reel up") -> swipe(false)
-                      c.contains("stop scrolling") -> true
-                      c.contains("unlike") -> clickByWords(listOf("unlike", "remove like"))
-                      c.contains("like") -> clickByWords(listOf("like"))
-                      c.contains("comment") -> clickByWords(listOf("comment", "comments"))
-                      c.contains("pause") -> clickByWords(listOf("pause"))
-                      c.contains("play") -> clickByWords(listOf("play"))
-                      else -> false
-                  }
-              }
-
-              private fun swipe(down: Boolean): Boolean {
-                  val dm = resources.displayMetrics
-                  val x = dm.widthPixels * 0.5f
-                  val start = if (down) dm.heightPixels * 0.30f else dm.heightPixels * 0.75f
-                  val end = if (down) dm.heightPixels * 0.75f else dm.heightPixels * 0.30f
-                  val path = Path().apply { moveTo(x, start); lineTo(x, end) }
-                  val gesture = GestureDescription.Builder()
-                      .addStroke(GestureDescription.StrokeDescription(path, 0, 450))
-                      .build()
-                  return dispatchGesture(gesture, null, null)
-              }
-
-              private fun clickByWords(words: List<String>): Boolean {
-                  val root = rootInActiveWindow ?: return false
-                  val queue = ArrayDeque<AccessibilityNodeInfo>()
-                  queue.add(root)
-                  while (queue.isNotEmpty()) {
-                      val node = queue.removeFirst()
-                      val text = node.text?.toString()?.lowercase(Locale.ROOT).orEmpty()
-                      val desc = node.contentDescription?.toString()?.lowercase(Locale.ROOT).orEmpty()
-                      if (words.any { text.contains(it) || desc.contains(it) } && node.isVisibleToUser) {
-                          if (node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-                          var parent = node.parent
-                          repeat(4) {
-                              if (parent != null && parent.isClickable && parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-                              parent = parent?.parent
-                          }
-                      }
-                      for (i in 0 until node.childCount) node.getChild(i)?.let(queue::add)
-                  }
-                  return false
-              }
-          }
-          KOTLIN
-
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("app/src/main/AndroidManifest.xml")
-          s = p.read_text()
-          marker = "    <application"
-          service = '''    <service
-                  android:name=".JarvisAccessibilityService"
-                  android:label="JARVIS Accessibility"
-                  android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-                  android:exported="true">
-                  <intent-filter>
-                      <action android:name="android.accessibilityservice.AccessibilityService" />
-                  </intent-filter>
-                  <meta-data
-                      android:name="android.accessibilityservice"
-                      android:resource="@xml/accessibility_service_config" />
-              </service>
-
-          '''
-          if "JarvisAccessibilityService" not in s:
-              s = s.replace(marker, service + marker)
-          p.write_text(s)
-          PY
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("app/src/main/java/com/jarvis/assistant/MainActivity.kt")
-          s = p.read_text()
-          s = s.replace("import android.os.Bundle", "import android.os.Bundle\nimport android.provider.Settings\nimport android.content.ComponentName\nimport android.media.AudioManager")
-          bridge = '''
-        @JavascriptInterface
-        fun postMessage(command: String) {
-            runOnUiThread { handleAccessibilityCommand(command) }
-        }
-
-        @JavascriptInterface
-        fun accessibilityEnabled(): Boolean = isAccessibilityEnabled()
-
-        @JavascriptInterface
-        fun openAccessibilitySettings() {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        }
-
-        private fun isAccessibilityEnabled(): Boolean {
-            val expected = ComponentName(this, JarvisAccessibilityService::class.java).flattenToString()
-            val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
-            return enabled.split(':').any { it.equals(expected, true) }
-        }
-
-        private fun handleAccessibilityCommand(command: String) {
-            val c = command.lowercase(Locale.ROOT).trim()
-            if (c.contains("accessibility")) {
-                openAccessibilitySettings()
-                return
-            }
-            val volume = Regex("volume\\\\s+(\\\\d{1,3})").find(c)?.groupValues?.get(1)?.toIntOrNull()
-            if (volume != null) {
-                val am = getSystemService(AUDIO_SERVICE) as AudioManager
-                val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                am.setStreamVolume(AudioManager.STREAM_MUSIC, max * volume.coerceIn(0, 100) / 100, 0)
-                return
-            }
-            val needs = listOf("scroll", "reel", "like", "unlike", "comment", "pause", "play").any { c.contains(it) }
-            if (!needs) return
-            val service = JarvisAccessibilityService.instance
-            if (service != null) {
-                service.execute(c)
-            } else {
-                AlertDialog.Builder(this)
-                    .setTitle("Enable JARVIS Accessibility")
-                    .setMessage("Reel scroll, Like/Unlike, Comment and UI controls need Accessibility access. Android requires you to enable JARVIS once in Accessibility settings.")
-                    .setPositiveButton("Enable") { _, _ -> openAccessibilitySettings() }
-                    .setNegativeButton("Later", null)
-                    .show()
-            }
-        }
-'''
-          if "fun postMessage(command: String)" not in s:
-              s = s.replace("        @JavascriptInterface\n        fun speak(text: String) {", bridge + "\n        @JavascriptInterface\n        fun speak(text: String) {")
-          p.write_text(s)
-          PY
-
-      - name: Fix Java/Kotlin JVM target
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("app/build.gradle.kts")
-          s = p.read_text()
-          if "compileOptions {" not in s:
-              s = s.replace(
-                  "    defaultConfig {",
-                  '    compileOptions {\n        sourceCompatibility = JavaVersion.VERSION_17\n        targetCompatibility = JavaVersion.VERSION_17\n    }\n\n    defaultConfig {'
-              )
-          if "kotlinOptions {" not in s:
-              s = s.replace(
-                  "\n}\n\ndependencies {",
-                  '\n\n    kotlinOptions {\n        jvmTarget = "17"\n    }\n}\n\ndependencies {'
-              )
-          p.write_text(s)
-          PY
-
+      # 2. Java 17
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
 
+      # 3. Android SDK
       - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # 4. Required Android packages
+      - name: Install Android SDK packages
         run: |
-          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
-
           yes | sdkmanager --licenses || true
-
           sdkmanager \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
+      # 5. Gradle
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
 
-      - name: Create Debug Keystore
-        working-directory: ${{ env.PROJECT_DIR }}
+      # 6. Check project
+      - name: Verify Android project
         run: |
-          keytool -genkeypair \
-            -v \
-            -keystore debug.keystore \
-            -storepass android \
-            -keypass android \
-            -alias androiddebugkey \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f app/build.gradle.kts
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/java/com/jarvis/assistant/MainActivity.kt
+          test -f app/src/main/java/com/jarvis/assistant/JarvisAccessibilityService.kt
+          echo "JARVIS Android project verified."
 
-      - name: Build Debug APK
-        working-directory: ${{ env.PROJECT_DIR }}
+      # 7. Build
+      - name: Build JARVIS Debug APK
         run: |
-          gradle assembleDebug \
+          gradle :app:assembleDebug \
             --no-daemon \
             --stacktrace
 
-      - name: Upload APK
+      # 8. Verify APK
+      - name: Verify APK
+        run: |
+          ls -lh app/build/outputs/apk/debug/
+          test -f app/build/outputs/apk/debug/app-debug.apk
+          echo "APK BUILD SUCCESS"
+
+      # 9. Upload APK
+      - name: Upload JARVIS APK
         uses: actions/upload-artifact@v4
         with:
-          name: Jarvis-APK
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          name: JARVIS-FINAL-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-
-# JARVIS build trigger: 2026-10-08
