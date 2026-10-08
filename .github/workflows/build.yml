@@ -172,6 +172,63 @@ jobs:
               s = s.replace(marker, service + marker)
           p.write_text(s)
           PY
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("app/src/main/java/com/jarvis/assistant/MainActivity.kt")
+          s = p.read_text()
+          s = s.replace("import android.os.Bundle", "import android.os.Bundle\nimport android.provider.Settings\nimport android.content.ComponentName\nimport android.media.AudioManager")
+          bridge = '''
+        @JavascriptInterface
+        fun postMessage(command: String) {
+            runOnUiThread { handleAccessibilityCommand(command) }
+        }
+
+        @JavascriptInterface
+        fun accessibilityEnabled(): Boolean = isAccessibilityEnabled()
+
+        @JavascriptInterface
+        fun openAccessibilitySettings() {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
+
+        private fun isAccessibilityEnabled(): Boolean {
+            val expected = ComponentName(this, JarvisAccessibilityService::class.java).flattenToString()
+            val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
+            return enabled.split(':').any { it.equals(expected, true) }
+        }
+
+        private fun handleAccessibilityCommand(command: String) {
+            val c = command.lowercase(Locale.ROOT).trim()
+            if (c.contains("accessibility")) {
+                openAccessibilitySettings()
+                return
+            }
+            val volume = Regex("volume\\\\s+(\\\\d{1,3})").find(c)?.groupValues?.get(1)?.toIntOrNull()
+            if (volume != null) {
+                val am = getSystemService(AUDIO_SERVICE) as AudioManager
+                val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                am.setStreamVolume(AudioManager.STREAM_MUSIC, max * volume.coerceIn(0, 100) / 100, 0)
+                return
+            }
+            val needs = listOf("scroll", "reel", "like", "unlike", "comment", "pause", "play").any { c.contains(it) }
+            if (!needs) return
+            val service = JarvisAccessibilityService.instance
+            if (service != null) {
+                service.execute(c)
+            } else {
+                AlertDialog.Builder(this)
+                    .setTitle("Enable JARVIS Accessibility")
+                    .setMessage("Reel scroll, Like/Unlike, Comment and UI controls need Accessibility access. Android requires you to enable JARVIS once in Accessibility settings.")
+                    .setPositiveButton("Enable") { _, _ -> openAccessibilitySettings() }
+                    .setNegativeButton("Later", null)
+                    .show()
+            }
+        }
+'''
+          if "fun postMessage(command: String)" not in s:
+              s = s.replace("        @JavascriptInterface\n        fun speak(text: String) {", bridge + "\n        @JavascriptInterface\n        fun speak(text: String) {")
+          p.write_text(s)
+          PY
 
       - name: Fix Java/Kotlin JVM target
         working-directory: ${{ env.PROJECT_DIR }}
