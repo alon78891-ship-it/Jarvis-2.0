@@ -102,12 +102,12 @@ jobs:
               print("Inspecting resource file for build diagnostics.")
 
           strings_path.parent.mkdir(parents=True, exist_ok=True)
-          strings_path.write_text("\\n".join([
+          strings_path.write_text("\n".join([
               '<?xml version="1.0" encoding="utf-8"?>',
               '<resources>',
               '    <string name="accessibility_service_description">JARVIS authorized UI control service for user-requested navigation and automation.</string>',
               '</resources>',
-          ]) + "\\n", encoding="utf-8")
+          ]) + "\n", encoding="utf-8")
           print("Wrote valid Android strings XML resource.")
           PY
           else
