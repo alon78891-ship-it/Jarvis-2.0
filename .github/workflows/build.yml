@@ -15,130 +15,81 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
-      # 1. Checkout
+      # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Java 17
+      # 2. Setup Java
       - name: Setup Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
-      # 3. Android SDK
+      # 3. Setup Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
-        with:
-          packages: "platform-tools"
 
-      # 4. Install required Android SDK packages
+      # 4. Install Android packages
       - name: Install Android SDK packages
         shell: bash
         run: |
           set -e
 
-          yes | sdkmanager --licenses >/dev/null || true
+          yes | sdkmanager --licenses
 
           sdkmanager \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      # 5. Find JARVIS ZIP and extract it
-      - name: Find and extract JARVIS Android project
+      # 5. Find and extract Android project
+      - name: Extract JARVIS Android project
         shell: bash
         run: |
           set -e
 
-          echo "======================================"
-          echo "Searching for JARVIS Android ZIP..."
-          echo "======================================"
+          mkdir -p extracted
 
-          ZIP=$(find . -maxdepth 3 -type f -name "*.zip" | head -n 1)
+          FOUND=false
 
-          if [ -z "$ZIP" ]; then
-            echo "ERROR: No ZIP file found in repository."
-            echo ""
-            echo "Repository files:"
-            find . -maxdepth 3 -type f | sort | head -200
-            exit 1
-          fi
+          while IFS= read -r ZIP; do
+            [ -n "$ZIP" ] || continue
 
-          echo "Using ZIP:"
-          echo "$ZIP"
+            echo "Checking ZIP: $ZIP"
 
-          rm -rf android-project
-          mkdir -p android-project
+            rm -rf extracted/*
+            unzip -q "$ZIP" -d extracted || continue
 
-          unzip -q "$ZIP" -d android-project
-
-          echo ""
-          echo "Searching for Gradle project..."
-
-          ROOT=$(find android-project \
-            -type f \
-            -name "settings.gradle.kts" \
-            -print -quit)
-
-          if [ -n "$ROOT" ]; then
-            ROOT=$(dirname "$ROOT")
-          fi
-
-          if [ -z "$ROOT" ]; then
-            ROOT=$(find android-project \
+            SETTINGS=$(find extracted \
               -type f \
-              -name "settings.gradle" \
+              \( -name "settings.gradle.kts" \
+              -o -name "settings.gradle" \) \
               -print -quit)
 
-            if [ -n "$ROOT" ]; then
-              ROOT=$(dirname "$ROOT")
+            if [ -n "$SETTINGS" ]; then
+              ROOT=$(dirname "$SETTINGS")
+
+              if [ -f "$ROOT/app/src/main/AndroidManifest.xml" ] && \
+                 { [ -f "$ROOT/app/build.gradle.kts" ] || \
+                   [ -f "$ROOT/app/build.gradle" ]; }; then
+
+                echo "JARVIS project found: $ROOT"
+                echo "ROOT=$ROOT" >> "$GITHUB_ENV"
+
+                FOUND=true
+                break
+              fi
             fi
-          fi
 
-          if [ -z "$ROOT" ]; then
-            echo "ERROR: Android Gradle project not found."
-            echo ""
-            echo "Extracted files:"
-            find android-project -maxdepth 6 -type f | sort
+          done < <(find . -maxdepth 3 -type f -name "*.zip")
+
+          if [ "$FOUND" != "true" ]; then
+            echo "ERROR: No ZIP containing a valid Android project was found."
+            echo "Repository files:"
+            find . -maxdepth 4 -type f | sort | head -200
             exit 1
           fi
-
-          echo ""
-          echo "Android project found:"
-          echo "$ROOT"
-
-          echo ""
-          echo "Checking project files..."
-
-          if [ ! -f "$ROOT/settings.gradle.kts" ] && \
-             [ ! -f "$ROOT/settings.gradle" ]; then
-            echo "ERROR: settings.gradle(.kts) missing."
-            exit 1
-          fi
-
-          if [ ! -f "$ROOT/build.gradle.kts" ] && \
-             [ ! -f "$ROOT/build.gradle" ]; then
-            echo "ERROR: root build.gradle(.kts) missing."
-            exit 1
-          fi
-
-          if [ ! -f "$ROOT/app/build.gradle.kts" ] && \
-             [ ! -f "$ROOT/app/build.gradle" ]; then
-            echo "ERROR: app/build.gradle(.kts) missing."
-            exit 1
-          fi
-
-          if [ ! -f "$ROOT/app/src/main/AndroidManifest.xml" ]; then
-            echo "ERROR: AndroidManifest.xml missing."
-            exit 1
-          fi
-
-          echo ""
-          echo "JARVIS Android project verified."
-
-          echo "ROOT=$ROOT" >> "$GITHUB_ENV"
 
       # 6. Setup Gradle
       - name: Setup Gradle
@@ -150,17 +101,15 @@ jobs:
       - name: Build JARVIS Debug APK
         shell: bash
         run: |
-          set -e
+          set -o pipefail
 
           cd "$ROOT"
 
-          echo "======================================"
-          echo "Building JARVIS APK..."
-          echo "======================================"
-
           gradle :app:assembleDebug \
             --no-daemon \
-            --stacktrace
+            --stacktrace \
+            --warning-mode all \
+            2>&1 | tee "$GITHUB_WORKSPACE/build-log.txt"
 
       # 8. Verify APK
       - name: Verify APK
@@ -170,23 +119,12 @@ jobs:
 
           APK="$ROOT/app/build/outputs/apk/debug/app-debug.apk"
 
-          echo "======================================"
-          echo "Checking APK..."
-          echo "======================================"
-
           if [ ! -f "$APK" ]; then
-            echo "ERROR: APK was not created."
-            echo ""
-            echo "Build output:"
-            find "$ROOT/app/build" -type f | sort || true
+            echo "ERROR: APK file was not generated."
             exit 1
           fi
 
-          echo ""
-          echo "======================================"
           echo "JARVIS APK BUILD SUCCESS"
-          echo "======================================"
-
           ls -lh "$APK"
 
       # 9. Upload APK
@@ -196,3 +134,12 @@ jobs:
           name: JARVIS-FINAL-APK
           path: ${{ env.ROOT }}/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      # 10. Upload build log even if build fails
+      - name: Upload build error log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-BUILD-ERROR-LOG
+          path: build-log.txt
+          if-no-files-found: ignore
