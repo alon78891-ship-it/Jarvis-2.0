@@ -75,6 +75,47 @@ jobs:
             exit 1
           fi
 
+      - name: Fix Android accessibility description resource
+        shell: bash
+        run: |
+          set -e
+          XML="$ROOT/app/src/main/res/xml/accessibility_service_config.xml"
+          if [ -f "$XML" ]; then
+            python3 - "$XML" "$ROOT/app/src/main/res/values/jarvis_build_strings.xml" <<'PY'
+          import pathlib
+          import sys
+
+          xml_path = pathlib.Path(sys.argv[1])
+          strings_path = pathlib.Path(sys.argv[2])
+          content = xml_path.read_text(encoding="utf-8")
+          bad = 'android:description="JARVIS authorized UI control service for user-requested navigation and automation."'
+          good = 'android:description="@string/accessibility_service_description"'
+
+          if bad in content:
+              content = content.replace(bad, good)
+              xml_path.write_text(content, encoding="utf-8")
+              print("Fixed accessibility service description to use a string resource.")
+          elif good in content:
+              print("Accessibility description already uses a resource.")
+          else:
+              print("Description text differs; leaving XML unchanged.")
+              print("Inspecting resource file for build diagnostics.")
+
+          strings_path.parent.mkdir(parents=True, exist_ok=True)
+          if not strings_path.exists():
+              strings_path.write_text(
+                  '<?xml version="1.0" encoding="utf-8"?>\\n'
+                  '<resources>\\n'
+                  '    <string name="accessibility_service_description">JARVIS authorized UI control service for user-requested navigation and automation.</string>\\n'
+                  '</resources>\\n',
+                  encoding="utf-8"
+              )
+          PY
+          else
+            echo "Accessibility config not found at expected path; listing XML resources."
+            find "$ROOT/app/src/main/res" -type f -name "*.xml" -print
+          fi
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
