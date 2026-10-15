@@ -1,0 +1,104 @@
+name: Build JARVIS APK (Action 7)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract JARVIS ZIP
+        shell: bash
+        run: |
+          set -e
+          mkdir -p extracted
+          ZIP=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
+
+          if [ -z "$ZIP" ]; then
+            echo "ERROR: JARVIS ZIP not found in repository root."
+            exit 1
+          fi
+
+          echo "Using ZIP: $ZIP"
+          unzip -o -q "$ZIP" -d extracted
+
+      - name: Find Android project
+        shell: bash
+        run: |
+          set -e
+          FILE=$(find extracted -type f \
+            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+            -print -quit)
+
+          if [ -z "$FILE" ]; then
+            echo "ERROR: settings.gradle(.kts) not found in ZIP."
+            exit 1
+          fi
+
+          DIR=$(dirname "$FILE")
+          if [ ! -f "$DIR/app/build.gradle.kts" ] && [ ! -f "$DIR/app/build.gradle" ]; then
+            echo "ERROR: Android app module not found in $DIR"
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$(cd "$DIR" && pwd)" >> "$GITHUB_ENV"
+          echo "Android project found: $DIR"
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -e
+          yes | sdkmanager --licenses || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;35.0.0"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Create debug keystore
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          keytool -genkeypair -v \
+            -keystore debug.keystore \
+            -storepass android \
+            -keypass android \
+            -alias androiddebugkey \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US" || true
+
+      - name: Build Debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Jarvis-APK-Action-7
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
